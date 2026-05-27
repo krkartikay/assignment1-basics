@@ -25,6 +25,12 @@ class Tokenizer:
         self.merged_pair_to_id: dict[TokenPair, TokenId] = {}
         self.merged_id_to_pair: dict[TokenId, TokenPair] = {}
 
+        ## Precomputed tokenization of all the words.
+        ## Will help tokenize entire document after training.
+        # It is built during training, but this map will be useful later
+        # too so we will make this a property of self.
+        self.word_to_tokens: dict[bytes, list[TokenId]] = {}
+
     def _create_new_token(self, tokenText: TokenText) -> TokenId:
         tokenId = len(self.id_to_text)  # This is automatically the max existing id + 1
         assert tokenId == max(id for id in self.id_to_text) + 1
@@ -63,59 +69,66 @@ class Tokenizer:
 
         # It is best to compute the map of words -> tokens first and not each
         # time, otherwise we would be O(N_WORDS) at every merge step.
-        word_to_tokens: dict[bytes, list[TokenId]] = {word: self.tokenize(word) for word in word_frequencies}
+        self.word_to_tokens = {word: self.tokenize(word) for word in word_frequencies}
 
         # Index tracking a token appears in which words.
         # The tokens -> words map would help, after merging, to know which words
         # in the first map need to be updated. This is initialized first by
         # mapping the words in word_to_tokens map.
         token_to_words: dict[TokenId, set[bytes]] = defaultdict(set)
-        for word, tokens in word_to_tokens.items():
+        for word, tokens in self.word_to_tokens.items():
             for token in tokens:
                 token_to_words[token].add(word)
 
-        for i in range(MAX_MERGES):
-            # Step 1. From word frequencies, determine pair frequencies.
-            t1, t2 = self._find_most_freq_pair(word_frequencies, word_to_tokens)
+        # Step 1. From word frequencies, determine initial pair frequencies.
+        token_pairs_counter = Counter()
+        for word, freq in word_frequencies.items():
+            tokens = self.word_to_tokens[word]
+            for t1, t2 in zip(tokens, tokens[1:]):
+                token_pairs_counter[(t1, t2)] += freq
 
-            # Step 2. Merge largest pair and define new token id.
+        for i in range(MAX_MERGES):
+            # Step 2. Determine most frequent token pair.
+            most_common_token_pair, _freq = token_pairs_counter.most_common(n=1)[0]
+            t1, t2 = most_common_token_pair
+
+            # Step 3. Merge largest pair and define new token id.
             new_token_id = self._merge_tokens(t1, t2)
 
-            # Step 3. Update word_to_tokens for the words which contain the token pair.
+            # Step 4. Update self.word_to_tokens for the words which contain the token pair.
             # How will we find the words that might contain the token pair? Using token_to_words.
             words_to_update = token_to_words[t1].intersection(token_to_words[t2])
             for word in words_to_update:
-                word_to_tokens[word] = self.tokenize(word)
+                old_tokenization = self.word_to_tokens[word]
+                new_tokenization = self.tokenize(word)
+                self.word_to_tokens[word] = new_tokenization
 
-            # Step 4. Update token_to_words for the old tokens.
+                # Step 5. Update token pair frequencies according to new tokenization
+                # of this word.
+                freq = word_frequencies[word]
+                for X, Y in zip(old_tokenization, old_tokenization[1:]):
+                    token_pairs_counter[(X, Y)] -= freq
+                for X, Y in zip(new_tokenization, new_tokenization[1:]):
+                    token_pairs_counter[(X, Y)] += freq
+
+            # Step 6. Update token_to_words for the old tokens.
             # The old tokens *might have disappeared* from the word,
             # But not necessarily.
             # Also we need to check if `word` exists in the set before removing
             # because it could be in the updatable words due to the other token.
             for word in words_to_update:
-                if t1 not in word_to_tokens[word]:
+                if t1 not in self.word_to_tokens[word]:
                     if word in token_to_words[t1]:
                         token_to_words[t1].remove(word)
-                if t2 not in word_to_tokens[word]:
+                if t2 not in self.word_to_tokens[word]:
                     if word in token_to_words[t2]:
                         token_to_words[t2].remove(word)
 
-            # Step 5. We also need to remember to update token_to_words for the
+            # Step 7. We also need to remember to update token_to_words for the
             # NEW TOKEN.
             for word in words_to_update:
-                if new_token_id in word_to_tokens[word]:
+                if new_token_id in self.word_to_tokens[word]:
                     token_to_words[new_token_id].add(word)
-
-    def _find_most_freq_pair(
-        self, word_frequencies: dict[bytes, int], word_to_tokens: dict[bytes, list[TokenId]]
-    ) -> TokenPair:
-        token_pairs_counter = Counter()
-        for word, freq in word_frequencies.items():
-            tokens = word_to_tokens[word]
-            for t1, t2 in zip(tokens, tokens[1:]):
-                token_pairs_counter[(t1, t2)] += freq
-        most_common_token_pair, _freq = token_pairs_counter.most_common(n=1)[0]
-        return most_common_token_pair
 
     def tokenize(self, word: bytes) -> list[TokenId]:
         # Basically we will merge the bytes in the correct order (increasing ids)
