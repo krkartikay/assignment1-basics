@@ -1,21 +1,36 @@
 import argparse
 import regex as re
 from collections import Counter, defaultdict
+from collections.abc import Iterable
+from itertools import chain
 
 type TokenId = int
 type TokenText = bytes
 type TokenPair = tuple[TokenId, TokenId]
 
-PRE_TOKENIZER_SPLIT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
-EOT_TOKEN = b"<|endoftext|>"
+PRE_TOKENIZER_SPLIT = rb"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+EOT_TOKEN = "<|endoftext|>"
 MAX_MERGES = 3500
 
 
 class Tokenizer:
-    def __init__(self):
-        ## Initial vocabulary, all single bytes + spl token
-        self.id_to_text: dict[TokenId, TokenText] = {i: bytes([i]) for i in range(256)}
-        self.id_to_text[256] = EOT_TOKEN  # Special token
+    def __init__(
+        self,
+        *,
+        vocab: dict[int, bytes] | None = None,
+        merges: list[tuple[bytes, bytes]] | None = None,
+        special_tokens: list[str] | None = None,
+    ):
+        ## Initial vocabulary, all single bytes
+        if vocab is None:
+            print("Initializing vocab with single byte tokens.")
+            vocab = {i: bytes([i]) for i in range(256)}
+            vocab[len(vocab)] = EOT_TOKEN.encode()
+        self.id_to_text: dict[TokenId, TokenText] = vocab
+
+        # Special tokens added at the end.
+        self.special_tokens = special_tokens or [EOT_TOKEN]
+        self.special_token_bytes_set = set(token.encode() for token in self.special_tokens)
 
         ## Token encoding dictionary: text (bytes) -> TokenId
         self.text_to_id: dict[TokenText, TokenId] = {text: tokenId for (tokenId, text) in self.id_to_text.items()}
@@ -25,6 +40,16 @@ class Tokenizer:
         self.merged_pair_to_id: dict[TokenPair, TokenId] = {}
         self.merged_id_to_pair: dict[TokenId, TokenPair] = {}
 
+        # If merges is provided, we can initialize the above merge tree.
+        if merges is not None:
+            for t1, t2 in merges:
+                token1_id = self.text_to_id[t1]
+                token2_id = self.text_to_id[t2]
+                token_merged_id = self.text_to_id[t1 + t2]
+                token_pair: TokenPair = (token1_id, token2_id)
+                self.merged_pair_to_id[token_pair] = token_merged_id
+                self.merged_id_to_pair[token_merged_id] = token_pair
+
         ## Precomputed tokenization of all the words.
         ## Will help tokenize entire document after training.
         # It is built during training, but this map will be useful later
@@ -33,7 +58,6 @@ class Tokenizer:
 
     def _create_new_token(self, tokenText: TokenText) -> TokenId:
         tokenId = len(self.id_to_text)  # This is automatically the max existing id + 1
-        assert tokenId == max(id for id in self.id_to_text) + 1
         self.id_to_text[tokenId] = tokenText
         self.text_to_id[tokenText] = tokenId
         return tokenId
@@ -58,7 +82,7 @@ class Tokenizer:
         ## For efficient tokenization we pre-split the text into words.
         # This is recommended by the assignment. They also make sure EOT token
         # does not appear in the pre-tokenized words.
-        word_frequencies = pre_tokenize(text)
+        word_frequencies = self.count_words(text)
         assert EOT_TOKEN not in word_frequencies
 
         # Core idea requires us to have a loop which merges tokens with highest
@@ -89,6 +113,7 @@ class Tokenizer:
 
         for i in range(MAX_MERGES):
             # Step 2. Determine most frequent token pair.
+            # TODO: ensure lexicographical order in case of ties.
             most_common_token_pair, freq = token_pairs_counter.most_common(n=1)[0]
             if freq == 0:
                 # no more pairs to merge, all words have been assigned
@@ -137,8 +162,9 @@ class Tokenizer:
     def tokenize(self, word: bytes) -> list[TokenId]:
         # Basically we will merge the bytes in the correct order (increasing ids)
         # NOTE: INEFFICIENT. Make this faster.
-        assert len(word) > 0
-        tokens: list[TokenId] = list(word)
+        # assert len(word) > 0
+        word_bytes = [bytes([b]) for b in word]
+        tokens: list[TokenId] = [self.text_to_id[byte] for byte in word_bytes]
         # Python 3.7+ ensures this iteration happens in insertion order
         # Even if it didn't, we could replace this by a for..range loop
         for merged_token_id, token_pair in self.merged_id_to_pair.items():
@@ -162,15 +188,51 @@ class Tokenizer:
         r = repr(self.id_to_text[token])[2:-1]
         return f"<{r}>"
 
+    def encode(self, text: str) -> list[TokenId]:
+        # print(f"Special tokens: {self.special_tokens}")
+        # print(f"Encoding text: {text[:50]}")
+        # first we need to split text into words then tokenize each word
+        tokens = []
+        words = self.pre_tokenize(text.encode("utf-8"))
+        words = list(words)
+        for word in words:
+            if word in self.special_token_bytes_set:
+                # print("special token: ", word)
+                tokens.append(self.text_to_id[word])
+            else:
+                # optimization: memoize
+                # if len(words) < 50:
+                # print("word: ", word)
+                if word not in self.word_to_tokens:
+                    self.word_to_tokens[word] = self.tokenize(word)
+                tokens += self.word_to_tokens[word]
+        return tokens
 
-def pre_tokenize(raw_bytes: bytes) -> Counter[bytes]:
-    documents = raw_bytes.split(EOT_TOKEN)
-    word_counts = Counter()
-    for doc in documents:
-        doc_str = doc.decode()
-        words = (match.group().encode() for match in re.finditer(PRE_TOKENIZER_SPLIT, doc_str))
-        word_counts.update(words)
-    return word_counts
+    def decode(self, tokens: list[TokenId]) -> str:
+        text = b""
+        for token in tokens:
+            text += self.id_to_text[token]
+        return text.decode("utf-8", errors="replace")
+
+    def pre_tokenize(self, raw_bytes: bytes) -> Iterable[bytes]:
+        spl_tokens_regex = b"|".join(f"({re.escape(token)})".encode() for token in self.special_tokens)
+        documents = re.split(spl_tokens_regex, raw_bytes)
+        words_in_all_docs = []
+        for doc in documents:
+            if re.match(spl_tokens_regex, doc):
+                # This document is actually a special token, we can directly add it to the list of words.
+                words_in_all_docs.append(doc)
+                continue
+            words = (match.group() for match in re.finditer(PRE_TOKENIZER_SPLIT, doc))
+            words_in_all_docs += words
+        return words_in_all_docs
+
+    def encode_iterable(self, text: Iterable[str]) -> Iterable[TokenId]:
+        for line in text:
+            yield from self.encode(line)
+
+    def count_words(self, raw_bytes: bytes) -> Counter[bytes]:
+        return Counter(self.pre_tokenize(raw_bytes))
 
 
 def run_tokenizer(input_file, output_file):
