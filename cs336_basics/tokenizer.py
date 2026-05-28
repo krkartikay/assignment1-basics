@@ -40,6 +40,7 @@ class Tokenizer:
         self.merged_id_to_pair: dict[TokenId, TokenPair] = {}
 
         # If merges is provided, we can initialize the above merge tree.
+        self.merges = merges or []
         if merges is not None:
             for t1, t2 in merges:
                 token1_id = self.text_to_id[t1]
@@ -68,11 +69,12 @@ class Tokenizer:
         new_text = text1 + text2
         new_id = self._create_new_token(new_text)
         token_pair = (token1, token2)
+        self.merges.append((text1, text2))
         self.merged_pair_to_id[token_pair] = new_id
         self.merged_id_to_pair[new_id] = token_pair
         return new_id
 
-    def train_tokenizer(self, text: bytes):
+    def train_tokenizer(self, text: bytes, max_merges: int = MAX_MERGES):
         """BPE Tokenizer training.
 
         Core idea: we will find the token pair with highest frequency and merge
@@ -110,10 +112,15 @@ class Tokenizer:
             for t1, t2 in zip(tokens, tokens[1:]):
                 token_pairs_counter[(t1, t2)] += freq
 
-        for i in range(MAX_MERGES):
+        for i in range(max_merges):
             # Step 2. Determine most frequent token pair.
-            # TODO: ensure lexicographical order in case of ties.
-            most_common_token_pair, freq = token_pairs_counter.most_common(n=1)[0]
+            # Ensure lexicographical order in case of ties.
+            max_freq = max(token_pairs_counter.values())
+            most_common_token_pair = max(
+                (pair for pair, f in token_pairs_counter.items() if f == max_freq),
+                key=lambda pair: (self.id_to_text[pair[0]], self.id_to_text[pair[1]]),
+            )
+            freq = token_pairs_counter[most_common_token_pair]
             if freq == 0:
                 # no more pairs to merge, all words have been assigned
                 # unique tokens
@@ -180,9 +187,6 @@ class Tokenizer:
             tokens = new_tokens
         return tokens
 
-    def save(self, filename: str):
-        pass
-
     def repr_token(self, token: TokenId):
         r = repr(self.id_to_text[token])[2:-1]
         return f"<{r}>"
@@ -238,16 +242,10 @@ class Tokenizer:
     def count_words(self, raw_bytes: bytes) -> Counter[bytes]:
         return Counter(self.pre_tokenize(raw_bytes))
 
-
-def run_tokenizer(input_file, output_file):
-    # ok, we will optimize the chunking later
-    raw_bytes = open(input_file, "rb").read()
-    t = Tokenizer()
-    t.train_tokenizer(raw_bytes)
-    print("Final token vocabulary: ")
-    for id, text in t.id_to_text.items():
-        print(f"{id:3d} : {t.repr_token(id)}")
-    t.save(output_file)
+    def train_on_file(self, input_file: str, max_merges: int = MAX_MERGES):
+        # ok, we will optimize the chunking later
+        raw_bytes = open(input_file, "rb").read()
+        self.train_tokenizer(raw_bytes, max_merges=max_merges)
 
 
 def main():
@@ -256,7 +254,11 @@ def main():
     parser.add_argument("--output_file", default="out/owt_train.bin", help="Output file path (.bin)")
     args = parser.parse_args()
 
-    run_tokenizer(args.input_file, args.output_file)
+    t = Tokenizer()
+    t.train_on_file(args.input_file)
+    print("Final token vocabulary: ")
+    for id in t.id_to_text:
+        print(f"{id:3d} : {t.repr_token(id)}")
 
     print("Tokenization completed successfully.")
 

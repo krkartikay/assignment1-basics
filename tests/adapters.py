@@ -591,4 +591,9 @@ def run_train_bpe(
                 representing that <token1> was merged with <token2>.
                 Merges are ordered by order of creation.
     """
-    raise NotImplementedError
+    initial_vocab = {i: bytes([i]) for i in range(256)}
+    for i, token in enumerate(special_tokens, start=256):
+        initial_vocab[i] = token.encode("utf-8")
+    t = tokenizer.Tokenizer(vocab=initial_vocab, merges=[], special_tokens=special_tokens)
+    t.train_on_file(str(input_path), max_merges=vocab_size - len(initial_vocab))
+    return t.id_to_text, t.merges
