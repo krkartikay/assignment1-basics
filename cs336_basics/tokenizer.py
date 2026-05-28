@@ -215,10 +215,15 @@ class Tokenizer:
         return text.decode("utf-8", errors="replace")
 
     def pre_tokenize(self, raw_bytes: bytes) -> Iterable[bytes]:
-        spl_tokens_regex = b"|".join(f"({re.escape(token)})".encode() for token in self.special_tokens)
-        documents = re.split(spl_tokens_regex, raw_bytes)
+        spl_tokens_regex = b"|".join(
+            f"({re.escape(token)})".encode()
+            for token in sorted(self.special_tokens, key=lambda x: len(x), reverse=True)
+        )
+        documents: list[bytes] = re.split(spl_tokens_regex, raw_bytes)
         words_in_all_docs = []
         for doc in documents:
+            if not doc:
+                continue
             if re.match(spl_tokens_regex, doc):
                 # This document is actually a special token, we can directly add it to the list of words.
                 words_in_all_docs.append(doc)
