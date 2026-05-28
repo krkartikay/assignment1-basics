@@ -217,7 +217,7 @@ class Tokenizer:
             text += self.id_to_text[token]
         return text.decode("utf-8", errors="replace")
 
-    def pre_tokenize(self, raw_bytes: bytes) -> Iterable[bytes]:
+    def pre_tokenize(self, raw_bytes: bytes, spl_tokens: bool = True) -> Iterable[bytes]:
         spl_tokens_regex = b"|".join(
             f"({re.escape(token)})".encode()
             for token in sorted(self.special_tokens, key=lambda x: len(x), reverse=True)
@@ -229,7 +229,8 @@ class Tokenizer:
                 continue
             if re.match(spl_tokens_regex, doc):
                 # This document is actually a special token, we can directly add it to the list of words.
-                words_in_all_docs.append(doc)
+                if spl_tokens:
+                    words_in_all_docs.append(doc)
                 continue
             words = (match.group() for match in re.finditer(PRE_TOKENIZER_SPLIT, doc))
             words_in_all_docs += words
@@ -240,7 +241,7 @@ class Tokenizer:
             yield from self.encode(line)
 
     def count_words(self, raw_bytes: bytes) -> Counter[bytes]:
-        return Counter(self.pre_tokenize(raw_bytes))
+        return Counter(self.pre_tokenize(raw_bytes, spl_tokens=False))
 
     def train_on_file(self, input_file: str, max_merges: int = MAX_MERGES):
         # ok, we will optimize the chunking later
