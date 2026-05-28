@@ -6,9 +6,9 @@ type TokenId = int
 type TokenText = bytes
 type TokenPair = tuple[TokenId, TokenId]
 
-PRE_TOKENIZER_SPLIT = rb"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
+PRE_TOKENIZER_SPLIT = r"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 EOT_TOKEN = b"<|endoftext|>"
-MAX_MERGES = 1000
+MAX_MERGES = 3500
 
 
 class Tokenizer:
@@ -39,7 +39,7 @@ class Tokenizer:
         return tokenId
 
     def _merge_tokens(self, token1: TokenId, token2: TokenId) -> TokenId:
-        print(f"Merging tokens {self._token(token1)} and {self._token(token2)}")
+        # print(f"Merging tokens {self._token(token1)} and {self._token(token2)}")
         text1 = self.id_to_text[token1]
         text2 = self.id_to_text[token2]
         new_text = text1 + text2
@@ -89,7 +89,11 @@ class Tokenizer:
 
         for i in range(MAX_MERGES):
             # Step 2. Determine most frequent token pair.
-            most_common_token_pair, _freq = token_pairs_counter.most_common(n=1)[0]
+            most_common_token_pair, freq = token_pairs_counter.most_common(n=1)[0]
+            if freq == 0:
+                # no more pairs to merge, all words have been assigned
+                # unique tokens
+                break
             t1, t2 = most_common_token_pair
 
             # Step 3. Merge largest pair and define new token id.
@@ -151,36 +155,20 @@ class Tokenizer:
             tokens = new_tokens
         return tokens
 
-    def tokenize_word_greedy(self, word: bytes) -> list[TokenId]:
-        """Tokenizes the word in a greedy way (longest token picked each time)
-
-        THIS IS WRONG AND SHOULD NOT BE USED
-        REAL BPE MERGES TOKENS IN TRAINING ORDER
-        NOTE TO SELF: KEEPING THIS WRONG CODE ONLY AS REMINDER TO NOT REPEAT
-                      THE MISTAKE.
-        """
-        tokens = []
-        remaining_word = word
-        while len(remaining_word) > 0:
-            # Find the longest prefix each time and replace with TokenId
-            for prefix_len in range(len(remaining_word)):
-                prefix = remaining_word[:prefix_len]
-                if prefix in self.text_to_id:
-                    tokens.append(self.text_to_id[prefix])
-        return tokens
-
     def save(self, filename: str):
         pass
 
-    def _token(self, token: TokenId):
-        return f"<{self.id_to_text[token].decode(errors='replace')}>"
+    def repr_token(self, token: TokenId):
+        r = repr(self.id_to_text[token])[2:-1]
+        return f"<{r}>"
 
 
 def pre_tokenize(raw_bytes: bytes) -> Counter[bytes]:
     documents = raw_bytes.split(EOT_TOKEN)
     word_counts = Counter()
     for doc in documents:
-        words = (match.group() for match in re.finditer(PRE_TOKENIZER_SPLIT, doc))
+        doc_str = doc.decode()
+        words = (match.group().encode() for match in re.finditer(PRE_TOKENIZER_SPLIT, doc_str))
         word_counts.update(words)
     return word_counts
 
@@ -190,6 +178,9 @@ def run_tokenizer(input_file, output_file):
     raw_bytes = open(input_file, "rb").read()
     t = Tokenizer()
     t.train_tokenizer(raw_bytes)
+    print("Final token vocabulary: ")
+    for id, text in t.id_to_text.items():
+        print(f"{id:3d} : {t.repr_token(id)}")
     t.save(output_file)
 
 
