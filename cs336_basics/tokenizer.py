@@ -2,7 +2,6 @@ import argparse
 import regex as re
 from collections import Counter, defaultdict
 from collections.abc import Iterable
-from itertools import chain
 
 type TokenId = int
 type TokenText = bytes
