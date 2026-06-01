@@ -136,7 +136,7 @@ class Tokenizer:
             words_to_update = token_to_words[t1].intersection(token_to_words[t2])
             for word in words_to_update:
                 old_tokenization = self.word_to_tokens[word]
-                new_tokenization = self.tokenize(word)
+                new_tokenization = self.update_tokenization(old_tokenization, new_token_id)
                 self.word_to_tokens[word] = new_tokenization
 
                 # Step 5. Update token pair frequencies according to new tokenization
@@ -165,6 +165,20 @@ class Tokenizer:
             for word in words_to_update:
                 if new_token_id in self.word_to_tokens[word]:
                     token_to_words[new_token_id].add(word)
+
+    def update_tokenization(self, old_tokens: list[TokenId], new_token_id: TokenId) -> list[TokenId]:
+        old_token_pair = self.merged_id_to_pair[new_token_id]
+        new_tokenization = []
+        i = 0
+        while i < len(old_tokens):
+            t1, t2 = old_tokens[i], old_tokens[i + 1] if i + 1 < len(old_tokens) else None
+            if (t1, t2) == old_token_pair:
+                new_tokenization.append(new_token_id)
+                i += 2
+            else:
+                new_tokenization.append(t1)
+                i += 1
+        return new_tokenization
 
     def tokenize(self, word: bytes) -> list[TokenId]:
         # Basically we will merge the bytes in the correct order (increasing ids)
