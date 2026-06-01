@@ -595,5 +595,5 @@ def run_train_bpe(
     for i, token in enumerate(special_tokens, start=256):
         initial_vocab[i] = token.encode("utf-8")
     t = tokenizer.Tokenizer(vocab=initial_vocab, merges=[], special_tokens=special_tokens)
-    t.train_on_file(str(input_path), max_merges=vocab_size - len(initial_vocab))
+    t.train_on_file(str(input_path), max_vocab=vocab_size)
     return t.id_to_text, t.merges
