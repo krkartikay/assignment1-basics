@@ -1,4 +1,8 @@
 import argparse
+import pickle
+from pathlib import Path
+
+import numpy as np
 import regex as re
 from collections import Counter, defaultdict
 from collections.abc import Iterable, Iterator
@@ -29,10 +33,15 @@ class Tokenizer:
             print("Initializing vocab with single byte tokens.")
             vocab = {i: bytes([i]) for i in range(256)}
             vocab[len(vocab)] = EOT_TOKEN.encode()
-        self.id_to_text: dict[TokenId, TokenText] = vocab
-
         # Special tokens added at the end.
-        self.special_tokens = special_tokens or [EOT_TOKEN]
+        self.special_tokens = [EOT_TOKEN] if special_tokens is None else special_tokens
+        existing_tokens = set(vocab.values())
+        for token in self.special_tokens:
+            token_bytes = token.encode("utf-8")
+            if token_bytes not in existing_tokens:
+                vocab[len(vocab)] = token_bytes
+                existing_tokens.add(token_bytes)
+        self.id_to_text: dict[TokenId, TokenText] = vocab
         self.special_token_bytes_set = set(token.encode() for token in self.special_tokens)
 
         ## Token encoding dictionary: text (bytes) -> TokenId
@@ -59,6 +68,34 @@ class Tokenizer:
         # It is built during training, but this map will be useful later
         # too so we will make this a property of self.
         self.word_to_tokens: dict[bytes, list[TokenId]] = {}
+
+    @classmethod
+    def from_files(
+        cls,
+        vocab_filepath: str,
+        merges_filepath: str,
+        special_tokens: list[str] | None = None,
+    ):
+        with open(vocab_filepath, "rb") as f:
+            vocab = pickle.load(f)
+        with open(merges_filepath, "rb") as f:
+            merges = pickle.load(f)
+        return cls(vocab=vocab, merges=merges, special_tokens=special_tokens)
+
+    load_state = from_files
+
+    def save_state(self, vocab_filepath: str, merges_filepath: str):
+        vocab_path = Path(vocab_filepath)
+        merges_path = Path(merges_filepath)
+        vocab_path.parent.mkdir(parents=True, exist_ok=True)
+        merges_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with open(vocab_path, "wb") as f:
+            pickle.dump(self.id_to_text, f)
+        with open(merges_path, "wb") as f:
+            pickle.dump(self.merges, f)
+
+    to_files = save_state
 
     def _create_new_token(self, tokenText: TokenText) -> TokenId:
         tokenId = len(self.id_to_text)  # This is automatically the max existing id + 1
@@ -241,6 +278,10 @@ class Tokenizer:
             reverse=True,
         )
         pre_tokenizer_re = re.compile(PRE_TOKENIZER_SPLIT)
+        if len(special_tokens) == 0:
+            for word_match in pre_tokenizer_re.finditer(raw_bytes):
+                yield word_match.group()
+            return
         special_re = re.compile(b"|".join(re.escape(token) for token in special_tokens))
         pos = 0
         for special_match in special_re.finditer(raw_bytes):
@@ -260,6 +301,17 @@ class Tokenizer:
         for line in text:
             yield from self.encode(line)
 
+    def encode_file_to_numpy(self, input_file: str, output_file: str, dtype=None):
+        if dtype is None:
+            max_id = max(self.id_to_text)
+            dtype = np.uint16 if max_id < 2**16 else np.uint32
+        output_path = Path(output_file)
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(input_file, encoding="utf-8") as f:
+            token_ids = np.fromiter(self.encode_iterable(f), dtype=dtype)
+        np.save(output_path, token_ids)
+        return token_ids
+
     def count_words(self, raw_bytes: bytes) -> Counter[bytes]:
         return Counter(self.pre_tokenize(raw_bytes, spl_tokens=False))
 
@@ -278,15 +330,22 @@ class Tokenizer:
 def main():
     parser = argparse.ArgumentParser(description="Tokenizer script")
     parser.add_argument("--input_file", default="data/owt_train.txt", help="Input file path (.txt)")
-    parser.add_argument("--output_file", default="out/owt_train.bin", help="Output file path (.bin)")
+    parser.add_argument("--output_file", default="out/owt_train.npy", help="Output file path (.npy)")
+    parser.add_argument("--vocab_file", default="out/tokenizer_vocab.pkl", help="Output vocab path (.pkl)")
+    parser.add_argument("--merges_file", default="out/tokenizer_merges.pkl", help="Output merges path (.pkl)")
+    parser.add_argument("--max_vocab", default=MAX_VOCAB, type=int, help="Maximum tokenizer vocabulary size")
     args = parser.parse_args()
 
     t = Tokenizer()
-    t.train_on_file(args.input_file)
+    t.train_on_file(args.input_file, max_vocab=args.max_vocab)
+    t.save_state(args.vocab_file, args.merges_file)
+    token_ids = t.encode_file_to_numpy(args.input_file, args.output_file)
     print("Final token vocabulary: ")
     for id in t.id_to_text:
         print(f"{id:3d} : {t.repr_token(id)}")
 
+    print(f"Serialized tokenizer to {args.vocab_file} and {args.merges_file}.")
+    print(f"Wrote {len(token_ids)} token ids to {args.output_file}.")
     print("Tokenization completed successfully.")
 
 
