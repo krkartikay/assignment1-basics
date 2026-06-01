@@ -20,9 +20,9 @@ def main() -> None:
 
     end = min(args.start + args.count, len(token_ids))
     ids = token_ids[args.start : end].astype(int).tolist()
+
     decoded = tokenizer.decode(ids)
     decoded_bytes = decoded.encode("utf-8")
-
     print(f"Loaded {len(token_ids)} token ids from {args.input_file}.")
     print(f"Decoded token slice [{args.start}:{end}].")
     print(f"Tokens: {len(ids)}")
@@ -30,7 +30,9 @@ def main() -> None:
     print(f"UTF-8 bytes: {len(decoded_bytes)}")
     print(f"Bytes per token: {len(decoded_bytes) / len(ids):.3f}")
     print("Decoded text:")
-    print(decoded)
+    for id in ids:
+        decoded_token = tokenizer.decode([id])
+        print(f"<{decoded_token}>", end="")
 
 
 if __name__ == "__main__":
