@@ -366,7 +366,7 @@ class Tokenizer:
         return Counter(self.pre_tokenize(raw_bytes, spl_tokens=False))
 
     def train_on_file(self, input_file: str, max_vocab: int = MAX_VOCAB):
-        cache_path = Path(input_file).with_suffix(".word_counts.pkl")
+        cache_path = Path("out") / Path(input_file).with_suffix(".word_counts.pkl").name
 
         if cache_path.exists():
             word_frequencies = pickle.load(open(cache_path, "rb"))
