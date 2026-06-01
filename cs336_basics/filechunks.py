@@ -1,5 +1,6 @@
 import os
 from typing import BinaryIO
+from os import cpu_count
 
 
 def find_chunk_boundaries(
@@ -51,7 +52,7 @@ def find_chunk_boundaries(
 
 def get_file_chunks(filename: str):
     file = open(filename, "rb")
-    num_processes = 4
+    num_processes = cpu_count() or 4
     boundaries = find_chunk_boundaries(file, num_processes, b"<|endoftext|>")
 
     for start, end in zip(boundaries[:-1], boundaries[1:]):

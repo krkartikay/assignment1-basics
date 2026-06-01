@@ -3,6 +3,7 @@ import regex as re
 from collections import Counter, defaultdict
 from collections.abc import Iterable
 from multiprocessing import Pool
+from tqdm import tqdm
 
 from cs336_basics.filechunks import get_file_chunks
 
@@ -12,7 +13,7 @@ type TokenPair = tuple[TokenId, TokenId]
 
 PRE_TOKENIZER_SPLIT = rb"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 EOT_TOKEN = "<|endoftext|>"
-MAX_MERGES = 3500
+MAX_VOCAB = 10_000
 
 
 class Tokenizer:
@@ -77,7 +78,7 @@ class Tokenizer:
         self.merged_id_to_pair[new_id] = token_pair
         return new_id
 
-    def train_tokenizer(self, word_frequencies: Counter[bytes], max_merges: int = MAX_MERGES):
+    def train_tokenizer(self, word_frequencies: Counter[bytes], max_merges):
         """BPE Tokenizer training.
 
         Core idea: we will find the token pair with highest frequency and merge
@@ -112,7 +113,7 @@ class Tokenizer:
             for t1, t2 in zip(tokens, tokens[1:]):
                 token_pairs_counter[(t1, t2)] += freq
 
-        for i in range(max_merges):
+        for i in tqdm(range(max_merges), "BPE Merges"):
             # Step 2. Determine most frequent token pair.
             # Ensure lexicographical order in case of ties.
             max_freq = max(token_pairs_counter.values())
@@ -243,13 +244,16 @@ class Tokenizer:
     def count_words(self, raw_bytes: bytes) -> Counter[bytes]:
         return Counter(self.pre_tokenize(raw_bytes, spl_tokens=False))
 
-    def train_on_file(self, input_file: str, max_merges: int = MAX_MERGES):
-        # ok, we will optimize the chunking later
+    def train_on_file(self, input_file: str, max_vocab: int = MAX_VOCAB):
+        print("Reading file and running pre-tokenization")
         mp_pool = Pool()
-        partial_word_frequencies = mp_pool.map(self.count_words, get_file_chunks(input_file))
-        word_frequencies: Counter[bytes] = sum(partial_word_frequencies, Counter())
+        word_frequencies: Counter[bytes] = Counter()
+        chunk_gen = get_file_chunks(input_file)
+        for partial_counts in mp_pool.imap_unordered(self.count_words, chunk_gen):
+            word_frequencies.update(partial_counts)
         assert EOT_TOKEN not in word_frequencies
-        self.train_tokenizer(word_frequencies, max_merges=max_merges)
+        print(f"Pre-tokenization completed. {len(word_frequencies)} unique words found. Applying merges.")
+        self.train_tokenizer(word_frequencies, max_merges=max_vocab - len(self.id_to_text))
 
 
 def main():
