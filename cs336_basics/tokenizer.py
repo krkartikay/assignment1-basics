@@ -1,4 +1,5 @@
 import argparse
+import heapq
 import pickle
 from pathlib import Path
 
@@ -14,6 +15,8 @@ from cs336_basics.filechunks import get_file_chunks
 type TokenId = int
 type TokenText = bytes
 type TokenPair = tuple[TokenId, TokenId]
+type TokenHeapKey = tuple[int, ...]
+type TokenPairHeapItem = tuple[int, TokenHeapKey, TokenHeapKey, TokenPair]
 
 PRE_TOKENIZER_SPLIT = rb"""'(?:[sdmt]|ll|ve|re)| ?\p{L}+| ?\p{N}+| ?[^\s\p{L}\p{N}]+|\s+(?!\S)|\s+"""
 PRE_TOKENIZER_SPLIT_RE = re.compile(PRE_TOKENIZER_SPLIT)
@@ -53,6 +56,9 @@ class Tokenizer:
 
         ## Token encoding dictionary: text (bytes) -> TokenId
         self.text_to_id: dict[TokenText, TokenId] = {text: tokenId for (tokenId, text) in self.id_to_text.items()}
+        self.token_id_to_heap_key: dict[TokenId, TokenHeapKey] = {
+            token_id: self._token_heap_key(token_text) for token_id, token_text in self.id_to_text.items()
+        }
 
         ## Merge Tree : Keeps track of which pair of tokens got merged.
         ## Tokenization needs to be done in the same order.
@@ -108,6 +114,7 @@ class Tokenizer:
         tokenId = len(self.id_to_text)  # This is automatically the max existing id + 1
         self.id_to_text[tokenId] = tokenText
         self.text_to_id[tokenText] = tokenId
+        self.token_id_to_heap_key[tokenId] = self._token_heap_key(tokenText)
         return tokenId
 
     def _merge_tokens(self, token1: TokenId, token2: TokenId) -> TokenId:
@@ -128,6 +135,20 @@ class Tokenizer:
             if (X, Y) == token_pair:
                 return True
         return False
+
+    def _token_heap_key(self, token_text: bytes) -> tuple[int, ...]:
+        # This reverses bytes ordering so heapq chooses the lexicographically
+        # largest token text when frequencies are tied.
+        return tuple(255 - byte for byte in token_text) + (256,)
+
+    def _pair_heap_item(self, token_pair: TokenPair, freq: int) -> TokenPairHeapItem:
+        t1, t2 = token_pair
+        return (
+            -freq,
+            self.token_id_to_heap_key[t1],
+            self.token_id_to_heap_key[t2],
+            token_pair,
+        )
 
     def train_tokenizer(self, word_frequencies: Counter[bytes], max_merges):
         """BPE Tokenizer training.
@@ -158,23 +179,30 @@ class Tokenizer:
                 token_to_words[token].add(word)
 
         # Step 1. From word frequencies, determine initial pair frequencies.
-        token_pairs_counter = Counter()
+        token_pair_frequencies: dict[TokenPair, int] = defaultdict(int)
         for word, freq in word_frequencies.items():
             tokens = self.word_to_tokens[word]
             for t1, t2 in zip(tokens, tokens[1:]):
-                token_pairs_counter[(t1, t2)] += freq
+                token_pair_frequencies[(t1, t2)] += freq
+
+        # Priority queue for selecting the most frequent token pair.
+        # Python has a min-heap, so we negate the frequency and reverse the
+        # lexicographic bytes ordering used as the tie-breaker.
+        token_pair_heap = []
+        for token_pair, freq in token_pair_frequencies.items():
+            heapq.heappush(token_pair_heap, self._pair_heap_item(token_pair, freq))
 
         for i in tqdm(range(max_merges), "BPE Merges"):
             # Step 2. Determine most frequent token pair.
             # Ensure lexicographical order in case of ties.
-            most_common_token_pair, freq = max(
-                token_pairs_counter.items(),
-                key=lambda kv: (
-                    kv[1],
-                    self.id_to_text[kv[0][0]],
-                    self.id_to_text[kv[0][1]],
-                ),
-            )
+            while token_pair_heap:
+                neg_freq, _, _, most_common_token_pair = heapq.heappop(token_pair_heap)
+                freq = -neg_freq
+                if token_pair_frequencies.get(most_common_token_pair, 0) == freq:
+                    break
+            else:
+                break
+
             if freq == 0:
                 # no more pairs to merge, all words have been assigned
                 # unique tokens
@@ -189,6 +217,7 @@ class Tokenizer:
             words_to_update = token_to_words[t1].intersection(token_to_words[t2])
             words_to_update = {word for word in words_to_update if self._check_token_pair(word, most_common_token_pair)}
 
+            pair_frequency_deltas: dict[TokenPair, int] = defaultdict(int)
             for word in words_to_update:
                 old_tokenization = self.word_to_tokens[word]
                 new_tokenization = self.update_tokenization(old_tokenization, new_token_id)
@@ -198,11 +227,19 @@ class Tokenizer:
                 # of this word.
                 freq = word_frequencies[word]
                 for X, Y in zip(old_tokenization, old_tokenization[1:]):
-                    token_pairs_counter[(X, Y)] -= freq
-                    if token_pairs_counter[(X, Y)] <= 0:
-                        del token_pairs_counter[(X, Y)]
+                    token_pair = (X, Y)
+                    pair_frequency_deltas[token_pair] -= freq
                 for X, Y in zip(new_tokenization, new_tokenization[1:]):
-                    token_pairs_counter[(X, Y)] += freq
+                    token_pair = (X, Y)
+                    pair_frequency_deltas[token_pair] += freq
+
+            for token_pair, freq_delta in pair_frequency_deltas.items():
+                updated_freq = token_pair_frequencies[token_pair] + freq_delta
+                if updated_freq <= 0:
+                    token_pair_frequencies.pop(token_pair, None)
+                else:
+                    token_pair_frequencies[token_pair] = updated_freq
+                    heapq.heappush(token_pair_heap, self._pair_heap_item(token_pair, updated_freq))
 
             # Step 6. Update token_to_words for the old tokens.
             # The old tokens *might have disappeared* from the word,
@@ -321,10 +358,7 @@ class Tokenizer:
         output_path.parent.mkdir(parents=True, exist_ok=True)
         # Show progress while encoding lines
         with open(input_file, encoding="utf-8") as f:
-            token_list = []
-            for token in self.encode_iterable(tqdm(f, desc="Encoding", unit="lines")):
-                token_list.append(token)
-            token_ids = np.array(token_list, dtype=dtype)
+            token_ids = np.fromiter(self.encode_iterable(tqdm(f, desc="Encoding", unit="lines")), dtype=dtype)
         np.save(output_path, token_ids)
         return token_ids
 
