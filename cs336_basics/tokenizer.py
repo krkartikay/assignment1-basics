@@ -122,6 +122,13 @@ class Tokenizer:
         self.merged_id_to_pair[new_id] = token_pair
         return new_id
 
+    def _check_token_pair(self, word, token_pair):
+        tokens = self.word_to_tokens[word]
+        for X, Y in zip(tokens, tokens[1:]):
+            if (X, Y) == token_pair:
+                return True
+        return False
+
     def train_tokenizer(self, word_frequencies: Counter[bytes], max_merges):
         """BPE Tokenizer training.
 
@@ -160,12 +167,14 @@ class Tokenizer:
         for i in tqdm(range(max_merges), "BPE Merges"):
             # Step 2. Determine most frequent token pair.
             # Ensure lexicographical order in case of ties.
-            max_freq = max(token_pairs_counter.values())
-            most_common_token_pair = max(
-                (pair for pair, f in token_pairs_counter.items() if f == max_freq),
-                key=lambda pair: (self.id_to_text[pair[0]], self.id_to_text[pair[1]]),
+            most_common_token_pair, freq = max(
+                token_pairs_counter.items(),
+                key=lambda kv: (
+                    kv[1],
+                    self.id_to_text[kv[0][0]],
+                    self.id_to_text[kv[0][1]],
+                ),
             )
-            freq = token_pairs_counter[most_common_token_pair]
             if freq == 0:
                 # no more pairs to merge, all words have been assigned
                 # unique tokens
@@ -178,6 +187,8 @@ class Tokenizer:
             # Step 4. Update self.word_to_tokens for the words which contain the token pair.
             # How will we find the words that might contain the token pair? Using token_to_words.
             words_to_update = token_to_words[t1].intersection(token_to_words[t2])
+            words_to_update = {word for word in words_to_update if self._check_token_pair(word, most_common_token_pair)}
+
             for word in words_to_update:
                 old_tokenization = self.word_to_tokens[word]
                 new_tokenization = self.update_tokenization(old_tokenization, new_token_id)
@@ -188,6 +199,8 @@ class Tokenizer:
                 freq = word_frequencies[word]
                 for X, Y in zip(old_tokenization, old_tokenization[1:]):
                     token_pairs_counter[(X, Y)] -= freq
+                    if token_pairs_counter[(X, Y)] <= 0:
+                        del token_pairs_counter[(X, Y)]
                 for X, Y in zip(new_tokenization, new_tokenization[1:]):
                     token_pairs_counter[(X, Y)] += freq
 
@@ -306,8 +319,12 @@ class Tokenizer:
             dtype = np.uint16 if max_id < 2**16 else np.uint32
         output_path = Path(output_file)
         output_path.parent.mkdir(parents=True, exist_ok=True)
+        # Show progress while encoding lines
         with open(input_file, encoding="utf-8") as f:
-            token_ids = np.fromiter(self.encode_iterable(f), dtype=dtype)
+            token_list = []
+            for token in self.encode_iterable(tqdm(f, desc="Encoding", unit="lines")):
+                token_list.append(token)
+            token_ids = np.array(token_list, dtype=dtype)
         np.save(output_path, token_ids)
         return token_ids
 
@@ -315,12 +332,19 @@ class Tokenizer:
         return Counter(self.pre_tokenize(raw_bytes, spl_tokens=False))
 
     def train_on_file(self, input_file: str, max_vocab: int = MAX_VOCAB):
-        print("Reading file and running pre-tokenization")
-        mp_pool = Pool()
-        word_frequencies: Counter[bytes] = Counter()
-        chunk_gen = get_file_chunks(input_file)
-        for partial_counts in mp_pool.imap_unordered(self.count_words, chunk_gen):
-            word_frequencies.update(partial_counts)
+        cache_path = Path(input_file).with_suffix(".word_counts.pkl")
+
+        if cache_path.exists():
+            word_frequencies = pickle.load(open(cache_path, "rb"))
+        else:
+            print("Reading file and running pre-tokenization")
+            mp_pool = Pool()
+            word_frequencies: Counter[bytes] = Counter()
+            chunk_gen = get_file_chunks(input_file)
+            for partial_counts in mp_pool.imap_unordered(self.count_words, chunk_gen):
+                word_frequencies.update(partial_counts)
+            pickle.dump(word_frequencies, open(cache_path, "wb"))
+
         assert EOT_TOKEN not in word_frequencies
         print(f"Pre-tokenization completed. {len(word_frequencies)} unique words found. Applying merges.")
         self.train_tokenizer(word_frequencies, max_merges=max_vocab - len(self.id_to_text))
