@@ -1,7 +1,7 @@
 import argparse
 import regex as re
 from collections import Counter, defaultdict
-from collections.abc import Iterable
+from collections.abc import Iterable, Iterator
 from multiprocessing import Pool
 from tqdm import tqdm
 
@@ -218,24 +218,29 @@ class Tokenizer:
             text += self.id_to_text[token]
         return text.decode("utf-8", errors="replace")
 
-    def pre_tokenize(self, raw_bytes: bytes, spl_tokens: bool = True) -> Iterable[bytes]:
-        spl_tokens_regex = b"|".join(
-            f"({re.escape(token)})".encode()
-            for token in sorted(self.special_tokens, key=lambda x: len(x), reverse=True)
+    def pre_tokenize(self, raw_bytes: bytes, spl_tokens: bool = True) -> Iterator[bytes]:
+        # Ideally compile/cache this once in __init__ if special_tokens is fixed.
+        special_tokens_bytes: list[bytes] = [token.encode("utf-8") for token in self.special_tokens]
+        special_tokens = sorted(
+            special_tokens_bytes,
+            key=len,
+            reverse=True,
         )
-        documents: list[bytes] = re.split(spl_tokens_regex, raw_bytes)
-        words_in_all_docs = []
-        for doc in documents:
-            if not doc:
-                continue
-            if re.match(spl_tokens_regex, doc):
-                # This document is actually a special token, we can directly add it to the list of words.
-                if spl_tokens:
-                    words_in_all_docs.append(doc)
-                continue
-            words = (match.group() for match in re.finditer(PRE_TOKENIZER_SPLIT, doc))
-            words_in_all_docs += words
-        return words_in_all_docs
+        pre_tokenizer_re = re.compile(PRE_TOKENIZER_SPLIT)
+        special_re = re.compile(b"|".join(re.escape(token) for token in special_tokens))
+        pos = 0
+        for special_match in special_re.finditer(raw_bytes):
+            start, end = special_match.span()
+            # Tokenize normal text before the special token, without slicing.
+            for word_match in pre_tokenizer_re.finditer(raw_bytes, pos, start):
+                yield word_match.group()
+            # Yield the special token itself if requested.
+            if spl_tokens:
+                yield special_match.group()
+            pos = end
+        # Tokenize the remaining normal text after the last special token.
+        for word_match in pre_tokenizer_re.finditer(raw_bytes, pos, len(raw_bytes)):
+            yield word_match.group()
 
     def encode_iterable(self, text: Iterable[str]) -> Iterable[TokenId]:
         for line in text:
