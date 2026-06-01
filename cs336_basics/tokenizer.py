@@ -2,6 +2,9 @@ import argparse
 import regex as re
 from collections import Counter, defaultdict
 from collections.abc import Iterable
+from multiprocessing import Pool
+
+from cs336_basics.filechunks import get_file_chunks
 
 type TokenId = int
 type TokenText = bytes
@@ -74,7 +77,7 @@ class Tokenizer:
         self.merged_id_to_pair[new_id] = token_pair
         return new_id
 
-    def train_tokenizer(self, text: bytes, max_merges: int = MAX_MERGES):
+    def train_tokenizer(self, word_frequencies: Counter[bytes], max_merges: int = MAX_MERGES):
         """BPE Tokenizer training.
 
         Core idea: we will find the token pair with highest frequency and merge
@@ -83,9 +86,6 @@ class Tokenizer:
         ## For efficient tokenization we pre-split the text into words.
         # This is recommended by the assignment. They also make sure EOT token
         # does not appear in the pre-tokenized words.
-        word_frequencies = self.count_words(text)
-        assert EOT_TOKEN not in word_frequencies
-
         # Core idea requires us to have a loop which merges tokens with highest
         # frequency.
 
@@ -245,8 +245,11 @@ class Tokenizer:
 
     def train_on_file(self, input_file: str, max_merges: int = MAX_MERGES):
         # ok, we will optimize the chunking later
-        raw_bytes = open(input_file, "rb").read()
-        self.train_tokenizer(raw_bytes, max_merges=max_merges)
+        mp_pool = Pool()
+        partial_word_frequencies = mp_pool.map(self.count_words, get_file_chunks(input_file))
+        word_frequencies: Counter[bytes] = sum(partial_word_frequencies, Counter())
+        assert EOT_TOKEN not in word_frequencies
+        self.train_tokenizer(word_frequencies, max_merges=max_merges)
 
 
 def main():
