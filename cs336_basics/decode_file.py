@@ -9,8 +9,8 @@ from cs336_basics.tokenizer import Tokenizer
 def main() -> None:
     parser = argparse.ArgumentParser(description="Decode token ids from a .npy file.")
     parser.add_argument("--input_file", default="out/owt_train.npy", help="Input token ids path (.npy)")
-    parser.add_argument("--vocab_file", default="out/tokenizer_vocab.pkl", help="Tokenizer vocab path (.pkl)")
-    parser.add_argument("--merges_file", default="out/tokenizer_merges.pkl", help="Tokenizer merges path (.pkl)")
+    parser.add_argument("--vocab_file", default="out/owt_tokenizer_vocab.pkl", help="Tokenizer vocab path (.pkl)")
+    parser.add_argument("--merges_file", default="out/owt_tokenizer_merges.pkl", help="Tokenizer merges path (.pkl)")
     parser.add_argument("--start", default=0, type=int, help="First token offset to decode")
     parser.add_argument("--count", default=500, type=int, help="Number of tokens to decode")
     args = parser.parse_args()

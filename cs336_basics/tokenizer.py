@@ -387,22 +387,27 @@ class Tokenizer:
 def main():
     parser = argparse.ArgumentParser(description="Tokenizer script")
     parser.add_argument("--input_file", default="data/owt_train.txt", help="Input file path (.txt)")
-    parser.add_argument("--output_file", default="out/owt_train.npy", help="Output file path (.npy)")
-    parser.add_argument("--vocab_file", default="out/tokenizer_vocab.pkl", help="Output vocab path (.pkl)")
-    parser.add_argument("--merges_file", default="out/tokenizer_merges.pkl", help="Output merges path (.pkl)")
+    parser.add_argument("--prefix", default="owt", help="Prefix for output tokenizer files")
+    parser.add_argument("--output_file", default=None, help="Output file path (.npy)")
+    parser.add_argument("--vocab_file", default=None, help="Output vocab path (.pkl)")
+    parser.add_argument("--merges_file", default=None, help="Output merges path (.pkl)")
     parser.add_argument("--max_vocab", default=MAX_VOCAB, type=int, help="Maximum tokenizer vocabulary size")
     args = parser.parse_args()
 
+    output_file = args.output_file or f"out/{args.prefix}_train.npy"
+    vocab_file = args.vocab_file or f"out/{args.prefix}_tokenizer_vocab.pkl"
+    merges_file = args.merges_file or f"out/{args.prefix}_tokenizer_merges.pkl"
+
     t = Tokenizer()
     t.train_on_file(args.input_file, max_vocab=args.max_vocab)
-    t.save_state(args.vocab_file, args.merges_file)
-    token_ids = t.encode_file_to_numpy(args.input_file, args.output_file)
+    t.save_state(vocab_file, merges_file)
+    token_ids = t.encode_file_to_numpy(args.input_file, output_file)
     print("Final token vocabulary: ")
     for id in t.id_to_text:
         print(f"{id:3d} : {t.repr_token(id)}")
 
-    print(f"Serialized tokenizer to {args.vocab_file} and {args.merges_file}.")
-    print(f"Wrote {len(token_ids)} token ids to {args.output_file}.")
+    print(f"Serialized tokenizer to {vocab_file} and {merges_file}.")
+    print(f"Wrote {len(token_ids)} token ids to {output_file}.")
     print("Tokenization completed successfully.")
 
 
