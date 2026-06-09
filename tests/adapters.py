@@ -10,6 +10,7 @@ from jaxtyping import Bool, Float, Int
 from torch import Tensor
 
 import cs336_basics.tokenizer as tokenizer
+import cs336_basics.linear_layer as linear_layer
 
 
 def run_linear(
@@ -30,8 +31,11 @@ def run_linear(
     Returns:
         Float[Tensor, "... d_out"]: The transformed output of your linear module.
     """
-
-    raise NotImplementedError
+    linear = linear_layer.LinearLayer(d_in, d_out)
+    linear.W = weights
+    result = linear(in_features)
+    print(f"{result=}")
+    return result
 
 
 def run_embedding(
@@ -454,7 +458,9 @@ def run_cross_entropy(
     raise NotImplementedError
 
 
-def run_gradient_clipping(parameters: Iterable[torch.nn.Parameter], max_l2_norm: float) -> None:
+def run_gradient_clipping(
+    parameters: Iterable[torch.nn.Parameter], max_l2_norm: float
+) -> None:
     """Given a set of parameters, clip their combined gradients to have l2 norm at most max_l2_norm.
 
     Args:
@@ -561,7 +567,9 @@ def get_tokenizer(
     Returns:
         A BPE tokenizer that uses the provided vocab, merges, and special tokens.
     """
-    return tokenizer.Tokenizer(vocab=vocab, merges=merges, special_tokens=special_tokens)
+    return tokenizer.Tokenizer(
+        vocab=vocab, merges=merges, special_tokens=special_tokens
+    )
 
 
 def run_train_bpe(
@@ -594,6 +602,8 @@ def run_train_bpe(
     initial_vocab = {i: bytes([i]) for i in range(256)}
     for i, token in enumerate(special_tokens, start=256):
         initial_vocab[i] = token.encode("utf-8")
-    t = tokenizer.Tokenizer(vocab=initial_vocab, merges=[], special_tokens=special_tokens)
+    t = tokenizer.Tokenizer(
+        vocab=initial_vocab, merges=[], special_tokens=special_tokens
+    )
     t.train_on_file(str(input_path), max_vocab=vocab_size)
     return t.id_to_text, t.merges
