@@ -1,6 +1,8 @@
 import torch
 from torch import nn
 from einops import einsum
+from torch import Tensor
+from jaxtyping import Float
 
 
 class LinearLayer(nn.Module):
@@ -20,6 +22,6 @@ class LinearLayer(nn.Module):
         self.W = torch.empty((out_features, in_features), device=device_, dtype=dtype)
         torch.nn.init.trunc_normal_(self.W)
 
-    def forward(self, X: torch.Tensor) -> torch.Tensor:
+    def forward(self, X: Float[Tensor, "... xin"]) -> Float[Tensor, "... xout"]:
         output = einsum(self.W, X, "xout xin, ... xin -> ... xout")
         return output
